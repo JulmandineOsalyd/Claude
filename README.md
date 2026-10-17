@@ -23,9 +23,13 @@ Dans l'app de bureau (où `/plugin` ne s'exécute pas) : clique sur + à côté 
 - Bouton **✨ Améliorer le prompt** dans la bande au-dessus de la barre de saisie (terminal et app de bureau), avec **↩ Annuler**.
 - Partout : `/ameliorer ton prompt ici` remplace la barre de saisie par la version améliorée, `/annuler-prompt` restaure l'original.
 
+## Dossier
+
+Tout le code du mod est dans `prompt-enhancer/` : le manifeste (`.claude-plugin/plugin.json`), les hooks (`hooks/`), les types (`types/`) et la configuration TypeScript (`tsconfig.json`). Le marketplace de la racine (`.claude-plugin/marketplace.json`) pointe vers ce dossier.
+
 ## Réglages
 
-`hooks/build.ts` : nombre de messages d'historique (`MAX_MESSAGES`) et troncature (`MAX_CHARS`). `hooks/system.ts` : system prompt envoyé à Haiku.
+`prompt-enhancer/hooks/build.ts` : nombre de messages d'historique (`MAX_MESSAGES`) et troncature (`MAX_CHARS`). `prompt-enhancer/hooks/system.ts` : system prompt envoyé à Haiku.
 
 ---
 
