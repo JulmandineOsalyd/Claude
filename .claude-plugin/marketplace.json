@@ -1,5 +1,16 @@
 {
   "name": "julie-mods",
-  "owner": { "name": "Julie Bredeche" },
-  "plugins": [{ "name": "prompt-enhancer", "source": "./" }]
+  "owner": {
+    "name": "Julie Bredeche"
+  },
+  "plugins": [
+    {
+      "name": "prompt-enhancer",
+      "source": "./"
+    },
+    {
+      "name": "assistant-dev",
+      "source": "./assistant-dev"
+    }
+  ]
 }

@@ -26,3 +26,15 @@ Dans l'app de bureau (où `/plugin` ne s'exécute pas) : clique sur + à côté 
 ## Réglages
 
 `hooks/build.ts` : nombre de messages d'historique (`MAX_MESSAGES`) et troncature (`MAX_CHARS`). `hooks/system.ts` : system prompt envoyé à Haiku.
+
+---
+
+# assistant-dev
+
+Mod Claude Code (en français) qui garde le fil d'une session : résumé des tâches réalisées, panneau Tâches (Lancer / Garder / Écarter, sans rien écraser dans le prompt), respiration 4-4-4-4 pendant que Claude travaille, propositions de compactage aux bons moments avec la raison, et bouton **✨ Améliorer le prompt**.
+
+```
+/plugin install assistant-dev --marketplace JulmandineOsalyd/Claude
+```
+
+Si `prompt-enhancer` est aussi installé, les deux mods affichent un bouton d'amélioration du prompt.

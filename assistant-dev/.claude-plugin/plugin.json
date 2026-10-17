@@ -1,0 +1,6 @@
+{
+  "name": "assistant-dev",
+  "version": "0.1.0",
+  "description": "Résumé fonctionnel des actions, panneau de tâches à droite et propositions de compact.",
+  "types": "./types/index.d.ts"
+}
