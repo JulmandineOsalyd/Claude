@@ -1,0 +1,1 @@
+{ "name": "prompt-enhancer", "version": "0.1.0", "description": "Bouton pour améliorer le prompt avec Haiku 5.5, en s'appuyant sur l'historique de la conversation", "types": "./types/index.d.ts" }

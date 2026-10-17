@@ -1,0 +1,5 @@
+{
+  "name": "julie-mods",
+  "owner": { "name": "Julie Bredeche" },
+  "plugins": [{ "name": "prompt-enhancer", "source": "./" }]
+}
