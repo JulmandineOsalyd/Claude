@@ -57,6 +57,47 @@ export function renderSummary(text: string): string {
     .join('\n')
 }
 
+const norm = (title: string) => title.trim().toLowerCase()
+
+/**
+ * Règle le sort des tâches lancées après un tour : « faite » seulement si la réponse les
+ * déclare réalisées ; sinon elles restent « en cours » et seront revérifiées au tour suivant.
+ */
+export function settleTasks(list: Task[], block: Block | null): Task[] {
+  return list.map(t => {
+    if (t.status !== 'en_cours' || !t.isSent) return t
+    const isDone = block?.realise.some(d => {
+      const a = norm(d.title)
+      const b = norm(t.title)
+
+      return a !== '' && (a.includes(b) || b.includes(a))
+    })
+
+    return isDone ? { ...t, status: 'faite' as const } : { ...t, isSent: false }
+  })
+}
+
+/** Ce que Claude doit savoir du panneau pour ne pas reproposer ce qui y est déjà. */
+export function buildBacklog(list: Task[]): string {
+  const titles = (statuses: Task['status'][]) =>
+    list
+      .filter(t => statuses.includes(t.status))
+      .slice(-20)
+      .map(t => `« ${t.title} »`)
+      .join(' ; ')
+  const active = titles(['gardee', 'en_cours'])
+  const closed = titles(['faite', 'ecartee'])
+  if (!active && !closed) return ''
+
+  return [
+    'Panneau Tâches : ne repropose pas une tâche déjà présente ci-dessous.',
+    active ? `Gardées ou en cours : ${active}.` : '',
+    closed ? `Faites ou écartées : ${closed}.` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 const isFinal = (t: Task) => t.status === 'faite' || t.status === 'ecartee'
 
 export function mergeTasks(existing: Task[], block: Block, turn: number): Task[] {

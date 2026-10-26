@@ -24,7 +24,7 @@ declare module 'claude-code' {
       done: Done[]
       showDetail: boolean
       expanded: string[]
-      tab: 'courant' | 'gardees'
+      tab: 'courant' | 'gardees' | 'faites'
       beat: number
     }
   }

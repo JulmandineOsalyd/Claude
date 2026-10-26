@@ -1,15 +1,17 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Task } from '../types'
+import type { Done, Task } from '../types'
 import {
   INSTRUCTION,
   breathFrame,
+  buildBacklog,
   describeCall,
   mergeTasks,
   parseBlock,
   progressLine,
   renderSummary,
+  settleTasks,
 } from './logic'
 
 const PANE = 'assistant-dev'
@@ -25,6 +27,7 @@ const isKept = (t: Task) => t.status === 'gardee' || t.status === 'en_cours'
 async function save($: EngineInterface) {
   const list = await read($, tasks)
   await $.store.set('kept', list.filter(isKept))
+  await $.store.set('done', await read($, done))
 }
 
 // Ajoute au brouillon sans écraser ce qui s'y trouve (autres tâches lancées, texte tapé).
@@ -53,6 +56,10 @@ export const register: Register = on => {
     if (current.length === 0 && Array.isArray(stored) && stored.length > 0) {
       await update($, tasks, () => stored)
     }
+    const history = (await $.store.get('done')) as Done[] | undefined
+    if ((await read($, done)).length === 0 && Array.isArray(history) && history.length > 0) {
+      await update($, done, () => history)
+    }
     void $.ui.open({ id: PANE, title: 'Tâches' })
 
     return next(e)
@@ -72,10 +79,11 @@ export const register: Register = on => {
 
   on('prompt.compose', async ($, e, next) => {
     const out = await next(e)
+    const backlog = buildBacklog(await read($, tasks))
+    const mine = [{ id: 'assistant-dev:format', text: INSTRUCTION, scope: 'session' as const }]
+    if (backlog) mine.push({ id: 'assistant-dev:backlog', text: backlog, scope: 'session' as const })
 
-    return {
-      sections: [...out.sections, { id: 'assistant-dev:format', text: INSTRUCTION, scope: 'session' as const }],
-    }
+    return { sections: [...out.sections, ...mine] }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -104,14 +112,12 @@ export const register: Register = on => {
 
     const block = parseBlock(e.answer)
     const turn = await $.session.turns()
-    await update($, tasks, list =>
-      list.map(t => (t.status === 'en_cours' && t.isSent ? { ...t, status: 'faite' as const } : t)),
-    )
+    await update($, tasks, list => settleTasks(list, block))
     if (block) {
       await update($, tasks, list => mergeTasks(list, block, turn))
-      await update($, done, list => [...list, ...block.realise].slice(-60))
-      await save($)
+      await update($, done, list => [...list, ...block.realise].slice(-100))
     }
+    await save($)
 
     return next(e)
   })
@@ -185,6 +191,7 @@ export const register: Register = on => {
     const list = await read($, tasks)
     const current = await read($, tab)
     const opened = await read($, expanded)
+    const finished = await read($, done)
 
     const launch = async (t: Task, text: string) => {
       await addToPrompt($, text)
@@ -192,6 +199,20 @@ export const register: Register = on => {
         l.map(x => ({ ...x, isNext: false, status: x.id === t.id ? ('en_cours' as const) : x.status, isSent: false })),
       )
       $.ui.toast('Tâche ajoutée au prompt : relis puis envoie.')
+    }
+    // Lance la tâche et envoie aussitôt le prompt ; si l'envoi n'est pas possible, il reste dans le brouillon.
+    const launchAndSend = async (t: Task) => {
+      const text = launchText(t)
+      await change($, l =>
+        l.map(x => ({ ...x, isNext: false, status: x.id === t.id ? ('en_cours' as const) : x.status, isSent: false })),
+      )
+      try {
+        await $.prompt.submit({ text, asUser: true })
+        await change($, l => l.map(x => (x.id === t.id ? { ...x, isSent: true } : x)))
+      } catch {
+        await addToPrompt($, text)
+        $.ui.toast('Envoi impossible : la tâche est dans le prompt, relis puis envoie.')
+      }
     }
     const launchText = (t: Task) => `Réalise cette tâche : ${t.title}.${t.detail ? ` ${t.detail}` : ''}`
     const setStatus = (t: Task, status: Task['status']) =>
@@ -230,6 +251,7 @@ export const register: Register = on => {
           variant={isPrimary ? 'primary' : undefined}
           onPress={() => launch(t, launchText(t))}
         />
+        <Button key={`send-${t.id}`} label="Lancer et envoyer" onPress={() => launchAndSend(t)} />
         {isGardee ? null : <Button key={`keep-${t.id}`} label="Garder" onPress={() => setStatus(t, 'gardee')} />}
         <Button key={`no-${t.id}`} label={isGardee ? 'Retirer' : 'Écarter'} onPress={() => setStatus(t, 'ecartee')} />
       </Box>
@@ -333,6 +355,12 @@ export const register: Register = on => {
             variant={current === 'gardees' ? 'primary' : undefined}
             onPress={() => update($, tab, () => 'gardees')}
           />
+          <Button
+            key="t3"
+            label={`Faites · ${finished.length}`}
+            variant={current === 'faites' ? 'primary' : undefined}
+            onPress={() => update($, tab, () => 'faites')}
+          />
         </Box>
         <Input
           key="add-task"
@@ -356,6 +384,31 @@ export const register: Register = on => {
             {section('Questions', rest('question'))}
             {section('Corrections', rest('correction'))}
             {section('Suggestions', rest('suggestion'))}
+          </Box>
+        ) : current === 'faites' ? (
+          <Box flexDirection="column" gap={1}>
+            {finished.length === 0 ? <Text dimColor>Rien de réalisé pour l’instant.</Text> : null}
+            {[...finished].reverse().map((d, i) => (
+              <Box key={`done-${i}`} flexDirection="column">
+                <Text>
+                  <Text color="green">✔ </Text>
+                  {d.title}
+                </Text>
+                {d.detail ? <Text dimColor>{d.detail}</Text> : null}
+              </Box>
+            ))}
+            {finished.length > 0 ? (
+              <Box>
+                <Button
+                  key="clear-done"
+                  label="Vider l’historique"
+                  onPress={async () => {
+                    await update($, done, () => [])
+                    await save($)
+                  }}
+                />
+              </Box>
+            ) : null}
           </Box>
         ) : (
           <Box flexDirection="column" gap={1}>
