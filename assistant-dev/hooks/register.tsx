@@ -1,15 +1,21 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Task } from '../types'
+import type { Done, Task } from '../types'
 import {
+  EXTRACT_SYSTEM,
   INSTRUCTION,
   breathFrame,
+  buildBacklog,
   describeCall,
+  isMissingBlock,
   mergeTasks,
   parseBlock,
+  parseExtraction,
   progressLine,
   renderSummary,
+  settleTasks,
+  toMarkdown,
 } from './logic'
 
 const PANE = 'assistant-dev'
@@ -17,6 +23,7 @@ const tasks = atom({ plugin: 'assistant-dev', key: 'tasks' } as const, [])
 const done = atom({ plugin: 'assistant-dev', key: 'done' } as const, [])
 const showDetail = atom({ plugin: 'assistant-dev', key: 'showDetail' } as const, false)
 const expanded = atom({ plugin: 'assistant-dev', key: 'expanded' } as const, [])
+const missed = atom({ plugin: 'assistant-dev', key: 'missed' } as const, null)
 const beat = atom({ plugin: 'assistant-dev', key: 'beat' } as const, -1)
 const tab = atom({ plugin: 'assistant-dev', key: 'tab' } as const, 'courant')
 
@@ -24,7 +31,8 @@ const isKept = (t: Task) => t.status === 'gardee' || t.status === 'en_cours'
 
 async function save($: EngineInterface) {
   const list = await read($, tasks)
-  await $.store.set('kept', list.filter(isKept))
+  await $.store.set('kept', list.filter(t => isKept(t) && !t.id.startsWith('native-')))
+  await $.store.set('done', await read($, done))
 }
 
 // Ajoute au brouillon sans écraser ce qui s'y trouve (autres tâches lancées, texte tapé).
@@ -40,8 +48,11 @@ async function change($: EngineInterface, fn: (list: Task[]) => Task[]) {
   await save($)
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   let timer: { cancel: () => void } | null = null
+  const maxTasks = typeof options.maxTasks === 'number' ? options.maxTasks : 80
+  const isSummaryOn = options.showSummary !== false
+  const isToolHidden = options.hideToolDetails !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -53,7 +64,11 @@ export const register: Register = on => {
     if (current.length === 0 && Array.isArray(stored) && stored.length > 0) {
       await update($, tasks, () => stored)
     }
-    void $.ui.open({ id: PANE, title: 'Tâches' })
+    const history = (await $.store.get('done')) as Done[] | undefined
+    if ((await read($, done)).length === 0 && Array.isArray(history) && history.length > 0) {
+      await update($, done, () => history)
+    }
+    if (options.autoOpen !== false) void $.ui.open({ id: PANE, title: 'Tâches' })
 
     return next(e)
   })
@@ -65,17 +80,22 @@ export const register: Register = on => {
 
       return { text: 'Détail des actions basculé.' }
     }
-    await $.ui.open({ id: PANE, title: 'Tâches' })
+    const opened = await $.ui.open({ id: PANE, title: 'Tâches' })
 
-    return { text: 'Panneau Tâches ouvert.' }
+    return {
+      text: opened.isPlaced
+        ? 'Panneau Tâches ouvert.'
+        : 'Le panneau Tâches ne peut pas s’afficher ici : cette interface n’a pas de place pour un panneau (essaie l’app de bureau ou un terminal assez large).',
+    }
   })
 
   on('prompt.compose', async ($, e, next) => {
     const out = await next(e)
+    const backlog = buildBacklog(await read($, tasks))
+    const mine = [{ id: 'assistant-dev:format', text: INSTRUCTION, scope: 'session' as const }]
+    if (backlog) mine.push({ id: 'assistant-dev:backlog', text: backlog, scope: 'session' as const })
 
-    return {
-      sections: [...out.sections, { id: 'assistant-dev:format', text: INSTRUCTION, scope: 'session' as const }],
-    }
+    return { sections: [...out.sections, ...mine] }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -104,27 +124,63 @@ export const register: Register = on => {
 
     const block = parseBlock(e.answer)
     const turn = await $.session.turns()
-    await update($, tasks, list =>
-      list.map(t => (t.status === 'en_cours' && t.isSent ? { ...t, status: 'faite' as const } : t)),
-    )
+    await update($, tasks, list => settleTasks(list, block))
+    await update($, missed, () => (isMissingBlock(e.answer, block) && e.reason === 'answer' ? e.answer.slice(0, 6000) : null))
     if (block) {
-      await update($, tasks, list => mergeTasks(list, block, turn))
-      await update($, done, list => [...list, ...block.realise].slice(-60))
-      await save($)
+      await update($, tasks, list => mergeTasks(list, block, turn, maxTasks))
+      await update($, done, list => [...list, ...block.realise].slice(-100))
     }
+    await save($)
 
     return next(e)
   })
 
+  // Les tâches natives de Claude (TaskCreate / TaskUpdate) apparaissent dans le panneau pendant le travail.
+  on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
+    const ran = await next(e)
+    const made = (ran as { result?: { task?: { id?: string } } }).result?.task?.id
+    if (made && (ran as { isError?: boolean }).isError !== true) {
+      const turn = await $.session.turns()
+      await update($, tasks, list => [
+        ...list.filter(t => t.id !== `native-${made}`),
+        { id: `native-${made}`, kind: 'suggestion' as const, title: e.subject, detail: e.description, status: 'en_cours' as const, turn },
+      ])
+    }
+
+    return ran
+  })
+
+  on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
+    const ran = await next(e)
+    const id = `native-${e.taskId}`
+    if ((ran as { isError?: boolean }).isError === true) return ran
+    const list = await read($, tasks)
+    const found = list.find(t => t.id === id)
+    if (!found) return ran
+    if (e.status === 'deleted') {
+      await update($, tasks, l => l.filter(t => t.id !== id))
+    } else if (e.status === 'completed') {
+      await update($, tasks, l => l.map(t => (t.id === id ? { ...t, status: 'faite' as const, isSent: true, isNext: false } : t)))
+      await update($, done, l => [...l, { title: found.title, detail: found.detail }].slice(-100))
+      await save($)
+    } else if (e.subject || e.description || e.status === 'in_progress') {
+      await update($, tasks, l =>
+        l.map(t => (t.id === id ? { ...t, title: e.subject ?? t.title, detail: e.description ?? t.detail, status: 'en_cours' as const } : t)),
+      )
+    }
+
+    return ran
+  })
+
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    const text = renderSummary(e.props.text)
+    const text = renderSummary(e.props.text, isSummaryOn)
     if (text === e.props.text) return next(e)
 
     return next({ ...e, props: { ...e.props, text } })
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.isErrored || (await read($, showDetail))) return next(e)
+    if (!isToolHidden || e.props.isErrored || (await read($, showDetail))) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     if (!e.props.isRunning) return <Box display="none" />
 
@@ -136,14 +192,14 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.props.isErrored || (await read($, showDetail))) return next(e)
+    if (!isToolHidden || e.props.isErrored || (await read($, showDetail))) return next(e)
     const { Box } = $.ui.resolve(e)
 
     return <Box display="none" />
   })
 
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-    if (await read($, showDetail)) return next(e)
+    if (!isToolHidden || (await read($, showDetail))) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const line = progressLine(e.props.calls)
     if (line === null) return <Box display="none" />
@@ -185,6 +241,8 @@ export const register: Register = on => {
     const list = await read($, tasks)
     const current = await read($, tab)
     const opened = await read($, expanded)
+    const finished = await read($, done)
+    const lost = await read($, missed)
 
     const launch = async (t: Task, text: string) => {
       await addToPrompt($, text)
@@ -192,6 +250,20 @@ export const register: Register = on => {
         l.map(x => ({ ...x, isNext: false, status: x.id === t.id ? ('en_cours' as const) : x.status, isSent: false })),
       )
       $.ui.toast('Tâche ajoutée au prompt : relis puis envoie.')
+    }
+    // Lance la tâche et envoie aussitôt le prompt ; si l'envoi n'est pas possible, il reste dans le brouillon.
+    const launchAndSend = async (t: Task) => {
+      const text = launchText(t)
+      await change($, l =>
+        l.map(x => ({ ...x, isNext: false, status: x.id === t.id ? ('en_cours' as const) : x.status, isSent: false })),
+      )
+      try {
+        await $.prompt.submit({ text, asUser: true })
+        await change($, l => l.map(x => (x.id === t.id ? { ...x, isSent: true } : x)))
+      } catch {
+        await addToPrompt($, text)
+        $.ui.toast('Envoi impossible : la tâche est dans le prompt, relis puis envoie.')
+      }
     }
     const launchText = (t: Task) => `Réalise cette tâche : ${t.title}.${t.detail ? ` ${t.detail}` : ''}`
     const setStatus = (t: Task, status: Task['status']) =>
@@ -207,6 +279,24 @@ export const register: Register = on => {
       ])
       await update($, tab, () => 'gardees')
       $.ui.toast('Tâche ajoutée dans « Gardées ».')
+    }
+    // Secours quand Claude a oublié son bloc : Haiku relit la dernière réponse et en tire les tâches.
+    const extract = async () => {
+      if (lost === null) return
+      $.ui.toast('Extraction des tâches…')
+      const r = await $.model.complete({ model: 'haiku', system: EXTRACT_SYSTEM, prompt: lost, maxTokens: 1500 })
+      const block = r.isAnswered ? parseExtraction(r.text) : null
+      if (!block) {
+        $.ui.toast('Extraction impossible cette fois.')
+
+        return
+      }
+      const turn = await $.session.turns()
+      await update($, tasks, l => mergeTasks(l, block, turn, maxTasks))
+      await update($, done, l => [...l, ...block.realise].slice(-100))
+      await update($, missed, () => null)
+      await save($)
+      $.ui.toast('Tâches extraites de la dernière réponse.')
     }
     const answer = async (t: Task, value: string) => {
       await addToPrompt($, `Réponse à « ${t.title} » : ${value}`)
@@ -230,6 +320,7 @@ export const register: Register = on => {
           variant={isPrimary ? 'primary' : undefined}
           onPress={() => launch(t, launchText(t))}
         />
+        <Button key={`send-${t.id}`} label="Lancer et envoyer" onPress={() => launchAndSend(t)} />
         {isGardee ? null : <Button key={`keep-${t.id}`} label="Garder" onPress={() => setStatus(t, 'gardee')} />}
         <Button key={`no-${t.id}`} label={isGardee ? 'Retirer' : 'Écarter'} onPress={() => setStatus(t, 'ecartee')} />
       </Box>
@@ -273,7 +364,7 @@ export const register: Register = on => {
       )
     }
 
-    // Ligne dense : un clic sur le titre déplie le détail et les actions.
+    // Ligne dense : le titre reste du texte simple, seul le chevron est cliquable et déplie le détail.
     const row = (t: Task, isGardee: boolean) => {
       const k = KIND[t.kind]
       const isOpen = opened.includes(t.id)
@@ -281,14 +372,15 @@ export const register: Register = on => {
       return (
         <Box key={`row-${t.id}`} flexDirection="column">
           <Box gap={1}>
+            <Button key={`t-${t.id}`} label={isOpen ? '▾' : '▸'} onPress={() => toggle(t.id)} />
             <Text color={k.color}>●</Text>
-            <Button key={`t-${t.id}`} label={`${isOpen ? '▾' : '▸'} ${t.title}`} onPress={() => toggle(t.id)} />
+            <Text bold={isOpen}>{t.title}</Text>
             {t.severity === 'haute' ? <Text color="red">haute</Text> : null}
             {t.status === 'en_cours' ? <Text color="green">en cours</Text> : null}
-            <Text dimColor>{k.label}</Text>
           </Box>
           {isOpen ? (
-            <Box flexDirection="column" paddingX={2}>
+            <Box flexDirection="column" paddingX={4}>
+              <Text color={k.color}>{k.label}</Text>
               {t.detail ? <Text dimColor>{t.detail}</Text> : null}
               {t.kind === 'question' ? answers(t) : actions(t, isGardee, false)}
             </Box>
@@ -297,10 +389,11 @@ export const register: Register = on => {
       )
     }
 
-    const section = (title: string, items: Task[], isGardee = false) =>
+    const SECTION = { Questions: 'yellow', Corrections: 'red', Suggestions: 'cyan', Gardées: 'magenta' } as const
+    const section = (title: keyof typeof SECTION, items: Task[], isGardee = false) =>
       items.length === 0 ? null : (
         <Box key={`sec-${title}`} flexDirection="column">
-          <Text bold dimColor>
+          <Text bold color={SECTION[title]}>
             {title.toUpperCase()} · {items.length}
           </Text>
           {[...items].sort(bySeverity).map(t => row(t, isGardee))}
@@ -316,11 +409,25 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" gap={1} paddingX={1}>
         <Box gap={1}>
-          <Text bold>Tâches</Text>
           <Text dimColor>
             {open.length} à traiter · {kept.length} gardée{kept.length > 1 ? 's' : ''}
           </Text>
+          <Button
+            key="copy"
+            label="Copier en Markdown"
+            onPress={async press => {
+              await $.ui.copy({ text: toMarkdown(await read($, tasks), await read($, done)), surface: press.surface })
+              $.ui.toast('Liste copiée.')
+            }}
+          />
         </Box>
+        {lost !== null ? (
+          <Box gap={1} flexWrap="wrap">
+            <Text color="yellow">⚠ Pas de bloc de tâches au dernier tour.</Text>
+            <Button key="extract" label="Extraire avec Haiku" onPress={extract} />
+            <Button key="ignore-missed" label="Ignorer" onPress={() => update($, missed, () => null)} />
+          </Box>
+        ) : null}
         <Box gap={1}>
           <Button
             key="t1"
@@ -333,6 +440,12 @@ export const register: Register = on => {
             label="Gardées"
             variant={current === 'gardees' ? 'primary' : undefined}
             onPress={() => update($, tab, () => 'gardees')}
+          />
+          <Button
+            key="t3"
+            label={`Faites · ${finished.length}`}
+            variant={current === 'faites' ? 'primary' : undefined}
+            onPress={() => update($, tab, () => 'faites')}
           />
         </Box>
         <Input
@@ -357,6 +470,31 @@ export const register: Register = on => {
             {section('Questions', rest('question'))}
             {section('Corrections', rest('correction'))}
             {section('Suggestions', rest('suggestion'))}
+          </Box>
+        ) : current === 'faites' ? (
+          <Box flexDirection="column" gap={1}>
+            {finished.length === 0 ? <Text dimColor>Rien de réalisé pour l’instant.</Text> : null}
+            {[...finished].reverse().map((d, i) => (
+              <Box key={`done-${i}`} flexDirection="column">
+                <Text>
+                  <Text color="green">✔ </Text>
+                  {d.title}
+                </Text>
+                {d.detail ? <Text dimColor>{d.detail}</Text> : null}
+              </Box>
+            ))}
+            {finished.length > 0 ? (
+              <Box>
+                <Button
+                  key="clear-done"
+                  label="Vider l’historique"
+                  onPress={async () => {
+                    await update($, done, () => [])
+                    await save($)
+                  }}
+                />
+              </Box>
+            ) : null}
           </Box>
         ) : (
           <Box flexDirection="column" gap={1}>

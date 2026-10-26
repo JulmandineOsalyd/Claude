@@ -44,10 +44,11 @@ export function parseBlock(text: string): Block | null {
   }
 }
 
-export function renderSummary(text: string): string {
+export function renderSummary(text: string, isSummary = true): string {
   const block = parseBlock(text)
   if (!block) return text.replace(OPEN, '').trimEnd()
   const body = text.replace(CLOSED, '').trimEnd()
+  if (!isSummary) return body
   const lines = block.realise.map(d => `- ✔ **${d.title}**${d.detail ? ` : ${d.detail}` : ''}`)
   const open =
     block.suggestions.length + block.corrections.length + block.questions.length
@@ -57,9 +58,50 @@ export function renderSummary(text: string): string {
     .join('\n')
 }
 
+const norm = (title: string) => title.trim().toLowerCase()
+
+/**
+ * Règle le sort des tâches lancées après un tour : « faite » seulement si la réponse les
+ * déclare réalisées ; sinon elles restent « en cours » et seront revérifiées au tour suivant.
+ */
+export function settleTasks(list: Task[], block: Block | null): Task[] {
+  return list.map(t => {
+    if (t.status !== 'en_cours' || !t.isSent) return t
+    const isDone = block?.realise.some(d => {
+      const a = norm(d.title)
+      const b = norm(t.title)
+
+      return a !== '' && (a.includes(b) || b.includes(a))
+    })
+
+    return isDone ? { ...t, status: 'faite' as const } : { ...t, isSent: false }
+  })
+}
+
+/** Ce que Claude doit savoir du panneau pour ne pas reproposer ce qui y est déjà. */
+export function buildBacklog(list: Task[]): string {
+  const titles = (statuses: Task['status'][]) =>
+    list
+      .filter(t => statuses.includes(t.status))
+      .slice(-20)
+      .map(t => `« ${t.title} »`)
+      .join(' ; ')
+  const active = titles(['gardee', 'en_cours'])
+  const closed = titles(['faite', 'ecartee'])
+  if (!active && !closed) return ''
+
+  return [
+    'Panneau Tâches : ne repropose pas une tâche déjà présente ci-dessous.',
+    active ? `Gardées ou en cours : ${active}.` : '',
+    closed ? `Faites ou écartées : ${closed}.` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 const isFinal = (t: Task) => t.status === 'faite' || t.status === 'ecartee'
 
-export function mergeTasks(existing: Task[], block: Block, turn: number): Task[] {
+export function mergeTasks(existing: Task[], block: Block, turn: number, limit = 80): Task[] {
   const kept = existing.filter(
     t => t.status === 'gardee' || t.status === 'en_cours' || t.status === 'ecartee' || (t.status === 'faite' && t.isSent),
   )
@@ -79,13 +121,42 @@ export function mergeTasks(existing: Task[], block: Block, turn: number): Task[]
   )
   block.suggestions.forEach((s, i) => push({ kind: 'suggestion', title: s.titre, detail: s.detail }, i))
 
-  const all = [...kept, ...fresh].slice(-80)
+  const all = [...kept, ...fresh].slice(-Math.max(limit, 10))
   const target =
     all.find(t => !isFinal(t) && t.title.trim().toLowerCase() === block.prochaine?.trim().toLowerCase()) ??
     all.find(t => t.status === 'proposee' && t.kind === 'correction' && t.severity === 'haute') ??
     all.find(t => t.status === 'proposee' && t.kind === 'suggestion')
   return all.map(t => ({ ...t, isNext: target !== undefined && t.id === target.id }))
 }
+
+/** Liste Markdown du panneau : à traiter, gardées, puis historique réalisé. */
+export function toMarkdown(list: Task[], finished: Done[]): string {
+  const line = (t: Task) => `- ${t.title}${t.detail ? ` : ${t.detail}` : ''}${t.severity === 'haute' ? ' (gravité haute)' : ''}`
+  const part = (title: string, lines: string[]) => (lines.length ? [`## ${title}`, ...lines, ''] : [])
+
+  return [
+    '# Tâches',
+    '',
+    ...part('À traiter', list.filter(t => t.status === 'proposee').map(line)),
+    ...part('Gardées', list.filter(t => t.status === 'gardee' || t.status === 'en_cours').map(line)),
+    ...part('Réalisé', finished.map(d => `- ✔ ${d.title}${d.detail ? ` : ${d.detail}` : ''}`)),
+  ]
+    .join('\n')
+    .trimEnd()
+}
+
+/** Vrai quand une réponse assez longue n'a pas de bloc exploitable : le panneau n'a rien reçu. */
+export const isMissingBlock = (answer: string, block: Block | null) => block === null && answer.trim().length >= 400
+
+export const EXTRACT_SYSTEM =
+  'Tu lis la réponse d’un assistant de développement et tu en extrais ce qu’elle a réalisé, suggéré, corrigé ou demandé. ' +
+  'Réponds uniquement par ce JSON, sans commentaire ni balises : ' +
+  '{"realise":[{"titre":"…","detail":"description fonctionnelle"}],"suggestions":[{"titre":"…","detail":"…"}],' +
+  '"corrections":[{"titre":"…","detail":"…","gravite":"haute|moyenne|basse"}],"questions":[{"titre":"…","options":["…"]}],"prochaine":"titre recommandé"}'
+
+/** Lit la réponse d'un modèle chargé d'extraire un bloc : le JSON est repris tel quel dans un bloc workbench. */
+export const parseExtraction = (text: string) =>
+  parseBlock('```workbench\n' + text.replace(/```(?:json|workbench)?/g, '').trim() + '\n```')
 
 const LABELS: Record<string, string> = {
   Read: 'Lecture d’un fichier',

@@ -56,7 +56,11 @@ Mod Claude Code qui garde le fil d'une session. Il fait :
 
 - un résumé des tâches réalisées à la fin de chaque réponse ;
 - un panneau Tâches (**Lancer** / **Garder** / **Écarter**), où Lancer ajoute la tâche au prompt sans rien écraser ;
-- une respiration 4-4-4-4 dans la bande au-dessus du prompt, affichée seulement pendant que Claude travaille.
+- une respiration 4-4-4-4 dans la bande au-dessus du prompt, affichée seulement pendant que Claude travaille ;
+- les tâches natives de Claude (`TaskCreate` / `TaskUpdate`) qui apparaissent dans le panneau pendant le travail ;
+- un secours quand Claude oublie son bloc de fin de réponse : alerte et bouton **Extraire avec Haiku** ;
+- un bouton **Copier en Markdown**, un onglet **Faites** et **Lancer et envoyer** ;
+- des réglages (`/config`) : ouverture du panneau au démarrage, résumé de fin de réponse, masquage des appels d'outils, nombre de tâches conservées. La commande `/assistant-dev` rouvre le panneau et dit s'il ne peut pas s'afficher.
 
 ### Installation
 

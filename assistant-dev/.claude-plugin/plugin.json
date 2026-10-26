@@ -1,6 +1,32 @@
 {
   "name": "assistant-dev",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Résumé fonctionnel des actions, panneau de tâches et respiration pendant le travail.",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Ouvrir le panneau au démarrage",
+      "description": "Ouvre le panneau Tâches au début de chaque session. Désactivé, la commande /assistant-dev l'ouvre.",
+      "default": true
+    },
+    "showSummary": {
+      "type": "boolean",
+      "title": "Résumé en fin de réponse",
+      "description": "Remplace le bloc technique de fin de réponse par la liste « Réalisé ».",
+      "default": true
+    },
+    "hideToolDetails": {
+      "type": "boolean",
+      "title": "Masquer les appels d'outils",
+      "description": "Affiche une ligne fonctionnelle à la place du détail des appels d'outils (les erreurs restent visibles).",
+      "default": true
+    },
+    "maxTasks": {
+      "type": "number",
+      "title": "Tâches conservées",
+      "description": "Nombre maximal de tâches gardées dans le panneau.",
+      "default": 80
+    }
+  }
 }
