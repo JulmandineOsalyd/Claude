@@ -193,9 +193,9 @@ export const register: Register = on => {
       )
       $.ui.toast('Tâche ajoutée au prompt : relis puis envoie.')
     }
+    const launchText = (t: Task) => `Réalise cette tâche : ${t.title}.${t.detail ? ` ${t.detail}` : ''}`
     const setStatus = (t: Task, status: Task['status']) =>
       change($, l => l.map(x => (x.id === t.id ? { ...x, status, isNext: false } : x)))
-
     const toggle = (id: string) =>
       update($, expanded, l => (l.includes(id) ? l.filter(x => x !== id) : [...l, id]))
     // Une tâche ajoutée à la main est gardée d'office : sinon la prochaine réponse la remplacerait.
@@ -208,89 +208,102 @@ export const register: Register = on => {
       await update($, tab, () => 'gardees')
       $.ui.toast('Tâche ajoutée dans « Gardées ».')
     }
+    const answer = async (t: Task, value: string) => {
+      await addToPrompt($, `Réponse à « ${t.title} » : ${value}`)
+      await setStatus(t, 'faite')
+    }
 
     const KIND = {
-      question: { icon: '?', color: 'yellow', label: 'Question' },
-      correction: { icon: '!', color: 'red', label: 'Correction' },
-      suggestion: { icon: '+', color: 'cyan', label: 'Suggestion' },
+      question: { color: 'yellow', label: 'question' },
+      correction: { color: 'red', label: 'correction' },
+      suggestion: { color: 'cyan', label: 'suggestion' },
     } as const
-
-    const card = (t: Task, isGardee: boolean, isNext = false) => {
-      const k = KIND[t.kind]
-      const accent = isNext ? 'green' : k.color
-      const isOpen = opened.includes(t.id)
-
-      return (
-        <Box key={`card-${t.id}`} flexDirection="column" paddingX={1} borderStyle="round" borderColor={accent}>
-          <Box gap={1} flexWrap="wrap">
-            <Text bold color={accent}>
-              {k.icon}
-            </Text>
-            <Text bold>{t.title}</Text>
-            {t.severity === 'haute' ? <Text color="red">● haute</Text> : null}
-            {t.status === 'en_cours' ? <Text color="green">▶ en cours</Text> : null}
-            {t.detail ? (
-              <Button key={`more-${t.id}`} label={isOpen ? '▾ détail' : '▸ détail'} onPress={() => toggle(t.id)} />
-            ) : null}
-          </Box>
-          {t.detail && isOpen ? <Text dimColor>{t.detail}</Text> : null}
-          {t.kind === 'question' && t.options ? (
-            <Box flexWrap="wrap" gap={1}>
-              {t.options.map((o, i) => (
-                <Button
-                  key={`opt-${t.id}-${i}`}
-                  label={o}
-                  onPress={async () => {
-                    await addToPrompt($, `Réponse à « ${t.title} » : ${o}`)
-                    await setStatus(t, 'faite')
-                  }}
-                />
-              ))}
-            </Box>
-          ) : null}
-          {t.kind === 'question' ? (
-            <Input
-              key={`in-${t.id}`}
-              placeholder="Ta réponse…"
-              submitLabel="insérer"
-              onSubmit={async v => {
-                if (!v.trim()) return
-                await addToPrompt($, `Réponse à « ${t.title} » : ${v.trim()}`)
-                await setStatus(t, 'faite')
-              }}
-            />
-          ) : (
-            <Box gap={1}>
-              <Button
-                key={`go-${t.id}`}
-                label="▶ Lancer"
-                variant="primary"
-                onPress={() => launch(t, `Réalise cette tâche : ${t.title}.${t.detail ? ` ${t.detail}` : ''}`)}
-              />
-              {isGardee ? null : (
-                <Button key={`keep-${t.id}`} label="★ Garder" onPress={() => setStatus(t, 'gardee')} />
-              )}
-              <Button
-                key={`no-${t.id}`}
-                label={isGardee ? 'Retirer' : 'Écarter'}
-                onPress={() => setStatus(t, 'ecartee')}
-              />
-            </Box>
-          )}
-        </Box>
-      )
-    }
 
     const RANK = { haute: 0, moyenne: 1, basse: 2 } as const
     const bySeverity = (a: Task, b: Task) => (RANK[a.severity ?? 'basse'] ?? 2) - (RANK[b.severity ?? 'basse'] ?? 2)
 
-    const section = (title: string, color: string, items: Task[], isGardee = false, isNext = false) =>
+    const actions = (t: Task, isGardee: boolean, isPrimary: boolean) => (
+      <Box gap={1}>
+        <Button
+          key={`go-${t.id}`}
+          label="Lancer"
+          variant={isPrimary ? 'primary' : undefined}
+          onPress={() => launch(t, launchText(t))}
+        />
+        {isGardee ? null : <Button key={`keep-${t.id}`} label="Garder" onPress={() => setStatus(t, 'gardee')} />}
+        <Button key={`no-${t.id}`} label={isGardee ? 'Retirer' : 'Écarter'} onPress={() => setStatus(t, 'ecartee')} />
+      </Box>
+    )
+
+    const answers = (t: Task) => (
+      <Box flexDirection="column">
+        {t.options ? (
+          <Box flexWrap="wrap" gap={1}>
+            {t.options.map((o, i) => (
+              <Button key={`opt-${t.id}-${i}`} label={o} onPress={() => answer(t, o)} />
+            ))}
+          </Box>
+        ) : null}
+        <Input
+          key={`in-${t.id}`}
+          placeholder="Ta réponse…"
+          submitLabel="insérer"
+          onSubmit={async v => {
+            if (v.trim()) await answer(t, v.trim())
+          }}
+        />
+      </Box>
+    )
+
+    // Mise en avant de la tâche à faire en premier : titre, détail et actions toujours visibles.
+    const hero = (t: Task, isGardee: boolean) => {
+      const k = KIND[t.kind]
+
+      return (
+        <Box key={`hero-${t.id}`} flexDirection="column" paddingX={1} borderStyle="round" borderColor="green">
+          <Box gap={1}>
+            <Text color={k.color}>●</Text>
+            <Text bold>{t.title}</Text>
+            {t.severity === 'haute' ? <Text color="red">haute</Text> : null}
+            {t.status === 'en_cours' ? <Text color="green">▶ en cours</Text> : null}
+          </Box>
+          {t.detail ? <Text dimColor>{t.detail}</Text> : null}
+          {t.kind === 'question' ? answers(t) : actions(t, isGardee, true)}
+        </Box>
+      )
+    }
+
+    // Ligne dense : un clic sur le titre déplie le détail et les actions.
+    const row = (t: Task, isGardee: boolean) => {
+      const k = KIND[t.kind]
+      const isOpen = opened.includes(t.id)
+
+      return (
+        <Box key={`row-${t.id}`} flexDirection="column">
+          <Box gap={1}>
+            <Text color={k.color}>●</Text>
+            <Button key={`t-${t.id}`} label={`${isOpen ? '▾' : '▸'} ${t.title}`} onPress={() => toggle(t.id)} />
+            {t.severity === 'haute' ? <Text color="red">haute</Text> : null}
+            {t.status === 'en_cours' ? <Text color="green">en cours</Text> : null}
+            <Text dimColor>{k.label}</Text>
+          </Box>
+          {isOpen ? (
+            <Box flexDirection="column" paddingX={2}>
+              {t.detail ? <Text dimColor>{t.detail}</Text> : null}
+              {t.kind === 'question' ? answers(t) : actions(t, isGardee, false)}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
+    const section = (title: string, items: Task[], isGardee = false) =>
       items.length === 0 ? null : (
-        <Box key={`sec-${title}`} flexDirection="column" gap={1}>
-          <Text bold color={color}>
+        <Box key={`sec-${title}`} flexDirection="column">
+          <Text bold dimColor>
             {title.toUpperCase()} · {items.length}
           </Text>
-          {[...items].sort(bySeverity).map(t => card(t, isGardee, isNext))}
+          {[...items].sort(bySeverity).map(t => row(t, isGardee))}
         </Box>
       )
 
@@ -303,15 +316,21 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" gap={1} paddingX={1}>
         <Box gap={1}>
+          <Text bold>Tâches</Text>
+          <Text dimColor>
+            {open.length} à traiter · {kept.length} gardée{kept.length > 1 ? 's' : ''}
+          </Text>
+        </Box>
+        <Box gap={1}>
           <Button
             key="t1"
-            label={`Courant · ${open.length}`}
+            label="Courant"
             variant={current === 'courant' ? 'primary' : undefined}
             onPress={() => update($, tab, () => 'courant')}
           />
           <Button
             key="t2"
-            label={`★ Gardées · ${kept.length}`}
+            label="Gardées"
             variant={current === 'gardees' ? 'primary' : undefined}
             onPress={() => update($, tab, () => 'gardees')}
           />
@@ -327,15 +346,24 @@ export const register: Register = on => {
         {current === 'courant' ? (
           <Box flexDirection="column" gap={1}>
             {isEmpty ? <Text dimColor>✓ Rien en attente. Les prochaines propositions arriveront ici.</Text> : null}
-            {nextTask ? section('Prochaine étape', 'green', [nextTask], nextTask.status !== 'proposee', true) : null}
-            {section('Questions pour toi', 'yellow', rest('question'))}
-            {section('Corrections proposées', 'red', rest('correction'))}
-            {section('Suggestions', 'cyan', rest('suggestion'))}
+            {nextTask ? (
+              <Box flexDirection="column">
+                <Text bold color="green">
+                  À FAIRE EN PREMIER
+                </Text>
+                {hero(nextTask, nextTask.status !== 'proposee')}
+              </Box>
+            ) : null}
+            {section('Questions', rest('question'))}
+            {section('Corrections', rest('correction'))}
+            {section('Suggestions', rest('suggestion'))}
           </Box>
         ) : (
           <Box flexDirection="column" gap={1}>
-            {kept.length === 0 ? <Text dimColor>★ Aucune tâche gardée. Appuie sur « Garder » pour en conserver.</Text> : null}
-            {section('Gardées', 'magenta', kept, true)}
+            {kept.length === 0 ? (
+              <Text dimColor>Aucune tâche gardée. Appuie sur « Garder » pour en conserver.</Text>
+            ) : null}
+            {section('Gardées', kept, true)}
           </Box>
         )}
       </Box>
