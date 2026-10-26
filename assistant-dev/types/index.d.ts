@@ -26,6 +26,7 @@ declare module 'claude-code' {
       expanded: string[]
       tab: 'courant' | 'gardees' | 'faites'
       beat: number
+      missed: string | null
     }
   }
 }

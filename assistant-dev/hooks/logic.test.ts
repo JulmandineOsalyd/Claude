@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { breathFrame, buildBacklog, mergeTasks, parseBlock, renderSummary, settleTasks } from './logic'
+import { breathFrame, buildBacklog, isMissingBlock, mergeTasks, parseBlock, parseExtraction, renderSummary, settleTasks, toMarkdown } from './logic'
 
 const answer =
   'Fait.\n```workbench\n{"realise":[{"titre":"Auth","detail":"token renouvelé"}],"suggestions":[{"titre":"Ajouter des tests"}],"corrections":[],"questions":[],"prochaine":"Ajouter des tests"}\n```'
@@ -51,4 +51,30 @@ test('le panneau dit à Claude ce qu’il ne doit pas reproposer', () => {
   const t = { id: 'a', kind: 'suggestion' as const, title: 'Ajouter des tests', status: 'ecartee' as const, turn: 1 }
   expect(buildBacklog([t])).toContain('Faites ou écartées : « Ajouter des tests »')
   expect(buildBacklog([{ ...t, status: 'gardee' as const }])).toContain('Gardées ou en cours : « Ajouter des tests »')
+})
+
+test('une réponse longue sans bloc est signalée, une courte non', () => {
+  expect(isMissingBlock('x'.repeat(500), null)).toBe(true)
+  expect(isMissingBlock('ok', null)).toBe(false)
+  expect(isMissingBlock('x'.repeat(500), parseBlock(answer))).toBe(false)
+})
+
+test('l’extraction reprend le JSON même entouré de balises', () => {
+  const out = parseExtraction('```json\n{"realise":[{"titre":"Auth"}],"suggestions":[]}\n```')
+  expect(out?.realise[0]?.title).toBe('Auth')
+  expect(parseExtraction('pas du JSON')).toBeNull()
+})
+
+test('l’export Markdown liste les tâches et l’historique', () => {
+  const t = { id: 'a', kind: 'correction' as const, title: 'Corriger X', severity: 'haute' as const, status: 'proposee' as const, turn: 1 }
+  const md = toMarkdown([t], [{ title: 'Auth', detail: 'token renouvelé' }])
+  expect(md).toContain('## À traiter')
+  expect(md).toContain('- Corriger X (gravité haute)')
+  expect(md).toContain('- ✔ Auth : token renouvelé')
+  expect(md).not.toContain('## Gardées')
+})
+
+test('la limite de tâches conservées est respectée', () => {
+  const block = { realise: [], suggestions: Array.from({ length: 30 }, (_, i) => ({ titre: `T${i}` })), corrections: [], questions: [] }
+  expect(mergeTasks([], block, 1, 12)).toHaveLength(12)
 })

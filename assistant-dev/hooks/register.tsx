@@ -3,15 +3,19 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Done, Task } from '../types'
 import {
+  EXTRACT_SYSTEM,
   INSTRUCTION,
   breathFrame,
   buildBacklog,
   describeCall,
+  isMissingBlock,
   mergeTasks,
   parseBlock,
+  parseExtraction,
   progressLine,
   renderSummary,
   settleTasks,
+  toMarkdown,
 } from './logic'
 
 const PANE = 'assistant-dev'
@@ -19,6 +23,7 @@ const tasks = atom({ plugin: 'assistant-dev', key: 'tasks' } as const, [])
 const done = atom({ plugin: 'assistant-dev', key: 'done' } as const, [])
 const showDetail = atom({ plugin: 'assistant-dev', key: 'showDetail' } as const, false)
 const expanded = atom({ plugin: 'assistant-dev', key: 'expanded' } as const, [])
+const missed = atom({ plugin: 'assistant-dev', key: 'missed' } as const, null)
 const beat = atom({ plugin: 'assistant-dev', key: 'beat' } as const, -1)
 const tab = atom({ plugin: 'assistant-dev', key: 'tab' } as const, 'courant')
 
@@ -26,7 +31,7 @@ const isKept = (t: Task) => t.status === 'gardee' || t.status === 'en_cours'
 
 async function save($: EngineInterface) {
   const list = await read($, tasks)
-  await $.store.set('kept', list.filter(isKept))
+  await $.store.set('kept', list.filter(t => isKept(t) && !t.id.startsWith('native-')))
   await $.store.set('done', await read($, done))
 }
 
@@ -43,8 +48,11 @@ async function change($: EngineInterface, fn: (list: Task[]) => Task[]) {
   await save($)
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   let timer: { cancel: () => void } | null = null
+  const maxTasks = typeof options.maxTasks === 'number' ? options.maxTasks : 80
+  const isSummaryOn = options.showSummary !== false
+  const isToolHidden = options.hideToolDetails !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -60,7 +68,7 @@ export const register: Register = on => {
     if ((await read($, done)).length === 0 && Array.isArray(history) && history.length > 0) {
       await update($, done, () => history)
     }
-    void $.ui.open({ id: PANE, title: 'Tâches' })
+    if (options.autoOpen !== false) void $.ui.open({ id: PANE, title: 'Tâches' })
 
     return next(e)
   })
@@ -72,9 +80,13 @@ export const register: Register = on => {
 
       return { text: 'Détail des actions basculé.' }
     }
-    await $.ui.open({ id: PANE, title: 'Tâches' })
+    const opened = await $.ui.open({ id: PANE, title: 'Tâches' })
 
-    return { text: 'Panneau Tâches ouvert.' }
+    return {
+      text: opened.isPlaced
+        ? 'Panneau Tâches ouvert.'
+        : 'Le panneau Tâches ne peut pas s’afficher ici : cette interface n’a pas de place pour un panneau (essaie l’app de bureau ou un terminal assez large).',
+    }
   })
 
   on('prompt.compose', async ($, e, next) => {
@@ -113,8 +125,9 @@ export const register: Register = on => {
     const block = parseBlock(e.answer)
     const turn = await $.session.turns()
     await update($, tasks, list => settleTasks(list, block))
+    await update($, missed, () => (isMissingBlock(e.answer, block) && e.reason === 'answer' ? e.answer.slice(0, 6000) : null))
     if (block) {
-      await update($, tasks, list => mergeTasks(list, block, turn))
+      await update($, tasks, list => mergeTasks(list, block, turn, maxTasks))
       await update($, done, list => [...list, ...block.realise].slice(-100))
     }
     await save($)
@@ -122,15 +135,52 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Les tâches natives de Claude (TaskCreate / TaskUpdate) apparaissent dans le panneau pendant le travail.
+  on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
+    const ran = await next(e)
+    const made = (ran as { result?: { task?: { id?: string } } }).result?.task?.id
+    if (made && (ran as { isError?: boolean }).isError !== true) {
+      const turn = await $.session.turns()
+      await update($, tasks, list => [
+        ...list.filter(t => t.id !== `native-${made}`),
+        { id: `native-${made}`, kind: 'suggestion' as const, title: e.subject, detail: e.description, status: 'en_cours' as const, turn },
+      ])
+    }
+
+    return ran
+  })
+
+  on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
+    const ran = await next(e)
+    const id = `native-${e.taskId}`
+    if ((ran as { isError?: boolean }).isError === true) return ran
+    const list = await read($, tasks)
+    const found = list.find(t => t.id === id)
+    if (!found) return ran
+    if (e.status === 'deleted') {
+      await update($, tasks, l => l.filter(t => t.id !== id))
+    } else if (e.status === 'completed') {
+      await update($, tasks, l => l.map(t => (t.id === id ? { ...t, status: 'faite' as const, isSent: true, isNext: false } : t)))
+      await update($, done, l => [...l, { title: found.title, detail: found.detail }].slice(-100))
+      await save($)
+    } else if (e.subject || e.description || e.status === 'in_progress') {
+      await update($, tasks, l =>
+        l.map(t => (t.id === id ? { ...t, title: e.subject ?? t.title, detail: e.description ?? t.detail, status: 'en_cours' as const } : t)),
+      )
+    }
+
+    return ran
+  })
+
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    const text = renderSummary(e.props.text)
+    const text = renderSummary(e.props.text, isSummaryOn)
     if (text === e.props.text) return next(e)
 
     return next({ ...e, props: { ...e.props, text } })
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.isErrored || (await read($, showDetail))) return next(e)
+    if (!isToolHidden || e.props.isErrored || (await read($, showDetail))) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     if (!e.props.isRunning) return <Box display="none" />
 
@@ -142,14 +192,14 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.props.isErrored || (await read($, showDetail))) return next(e)
+    if (!isToolHidden || e.props.isErrored || (await read($, showDetail))) return next(e)
     const { Box } = $.ui.resolve(e)
 
     return <Box display="none" />
   })
 
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-    if (await read($, showDetail)) return next(e)
+    if (!isToolHidden || (await read($, showDetail))) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const line = progressLine(e.props.calls)
     if (line === null) return <Box display="none" />
@@ -192,6 +242,7 @@ export const register: Register = on => {
     const current = await read($, tab)
     const opened = await read($, expanded)
     const finished = await read($, done)
+    const lost = await read($, missed)
 
     const launch = async (t: Task, text: string) => {
       await addToPrompt($, text)
@@ -228,6 +279,24 @@ export const register: Register = on => {
       ])
       await update($, tab, () => 'gardees')
       $.ui.toast('Tâche ajoutée dans « Gardées ».')
+    }
+    // Secours quand Claude a oublié son bloc : Haiku relit la dernière réponse et en tire les tâches.
+    const extract = async () => {
+      if (lost === null) return
+      $.ui.toast('Extraction des tâches…')
+      const r = await $.model.complete({ model: 'haiku', system: EXTRACT_SYSTEM, prompt: lost, maxTokens: 1500 })
+      const block = r.isAnswered ? parseExtraction(r.text) : null
+      if (!block) {
+        $.ui.toast('Extraction impossible cette fois.')
+
+        return
+      }
+      const turn = await $.session.turns()
+      await update($, tasks, l => mergeTasks(l, block, turn, maxTasks))
+      await update($, done, l => [...l, ...block.realise].slice(-100))
+      await update($, missed, () => null)
+      await save($)
+      $.ui.toast('Tâches extraites de la dernière réponse.')
     }
     const answer = async (t: Task, value: string) => {
       await addToPrompt($, `Réponse à « ${t.title} » : ${value}`)
@@ -339,9 +408,26 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1} paddingX={1}>
-        <Text dimColor>
-          {open.length} à traiter · {kept.length} gardée{kept.length > 1 ? 's' : ''}
-        </Text>
+        <Box gap={1}>
+          <Text dimColor>
+            {open.length} à traiter · {kept.length} gardée{kept.length > 1 ? 's' : ''}
+          </Text>
+          <Button
+            key="copy"
+            label="Copier en Markdown"
+            onPress={async press => {
+              await $.ui.copy({ text: toMarkdown(await read($, tasks), await read($, done)), surface: press.surface })
+              $.ui.toast('Liste copiée.')
+            }}
+          />
+        </Box>
+        {lost !== null ? (
+          <Box gap={1} flexWrap="wrap">
+            <Text color="yellow">⚠ Pas de bloc de tâches au dernier tour.</Text>
+            <Button key="extract" label="Extraire avec Haiku" onPress={extract} />
+            <Button key="ignore-missed" label="Ignorer" onPress={() => update($, missed, () => null)} />
+          </Box>
+        ) : null}
         <Box gap={1}>
           <Button
             key="t1"
