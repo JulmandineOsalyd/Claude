@@ -273,7 +273,7 @@ export const register: Register = on => {
       )
     }
 
-    // Ligne dense : un clic sur le titre déplie le détail et les actions.
+    // Ligne dense : le titre reste du texte simple, seul le chevron est cliquable et déplie le détail.
     const row = (t: Task, isGardee: boolean) => {
       const k = KIND[t.kind]
       const isOpen = opened.includes(t.id)
@@ -281,14 +281,15 @@ export const register: Register = on => {
       return (
         <Box key={`row-${t.id}`} flexDirection="column">
           <Box gap={1}>
+            <Button key={`t-${t.id}`} label={isOpen ? '▾' : '▸'} onPress={() => toggle(t.id)} />
             <Text color={k.color}>●</Text>
-            <Button key={`t-${t.id}`} label={`${isOpen ? '▾' : '▸'} ${t.title}`} onPress={() => toggle(t.id)} />
+            <Text bold={isOpen}>{t.title}</Text>
             {t.severity === 'haute' ? <Text color="red">haute</Text> : null}
             {t.status === 'en_cours' ? <Text color="green">en cours</Text> : null}
-            <Text dimColor>{k.label}</Text>
           </Box>
           {isOpen ? (
-            <Box flexDirection="column" paddingX={2}>
+            <Box flexDirection="column" paddingX={4}>
+              <Text color={k.color}>{k.label}</Text>
               {t.detail ? <Text dimColor>{t.detail}</Text> : null}
               {t.kind === 'question' ? answers(t) : actions(t, isGardee, false)}
             </Box>
@@ -297,10 +298,11 @@ export const register: Register = on => {
       )
     }
 
-    const section = (title: string, items: Task[], isGardee = false) =>
+    const SECTION = { Questions: 'yellow', Corrections: 'red', Suggestions: 'cyan', Gardées: 'magenta' } as const
+    const section = (title: keyof typeof SECTION, items: Task[], isGardee = false) =>
       items.length === 0 ? null : (
         <Box key={`sec-${title}`} flexDirection="column">
-          <Text bold dimColor>
+          <Text bold color={SECTION[title]}>
             {title.toUpperCase()} · {items.length}
           </Text>
           {[...items].sort(bySeverity).map(t => row(t, isGardee))}
@@ -315,12 +317,9 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1} paddingX={1}>
-        <Box gap={1}>
-          <Text bold>Tâches</Text>
-          <Text dimColor>
-            {open.length} à traiter · {kept.length} gardée{kept.length > 1 ? 's' : ''}
-          </Text>
-        </Box>
+        <Text dimColor>
+          {open.length} à traiter · {kept.length} gardée{kept.length > 1 ? 's' : ''}
+        </Text>
         <Box gap={1}>
           <Button
             key="t1"
