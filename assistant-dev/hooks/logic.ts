@@ -1,4 +1,4 @@
-import type { Advice, Dismissal, Done, Severity, Task } from '../types'
+import type { Done, Severity, Task } from '../types'
 
 export type Block = {
   realise: Done[]
@@ -6,8 +6,6 @@ export type Block = {
   corrections: { titre: string; detail?: string; gravite?: Severity }[]
   questions: { titre: string; detail?: string; options?: string[] }[]
   prochaine?: string
-  bloque?: boolean
-  nouveauSujet?: boolean
 }
 
 const CLOSED = /```workbench\s*([\s\S]*?)```/
@@ -20,9 +18,7 @@ export const INSTRUCTION = [
   '"suggestions":[{"titre":"…","detail":"…"}],',
   '"corrections":[{"titre":"…","detail":"…","gravite":"haute|moyenne|basse"}],',
   '"questions":[{"titre":"…","options":["…"]}],',
-  '"prochaine":"titre de la tâche que tu recommandes","bloque":false,"nouveau_sujet":false}',
-  '"bloque" vaut true si un test ou une commande échoue sans être résolu.',
-  '"nouveau_sujet" vaut true quand la demande de l’utilisateur n’a plus de lien avec le travail précédent.',
+  '"prochaine":"titre de la tâche que tu recommandes"}',
   'Ne recopie pas ces listes dans le texte : le mod les affiche dans le résumé et dans le panneau Tâches.',
 ].join('\n')
 
@@ -42,8 +38,6 @@ export function parseBlock(text: string): Block | null {
       corrections: list(raw.corrections),
       questions: list(raw.questions),
       prochaine: typeof raw.prochaine === 'string' ? raw.prochaine : undefined,
-      bloque: raw.bloque === true,
-      nouveauSujet: raw.nouveau_sujet === true,
     }
   } catch {
     return null
@@ -91,53 +85,6 @@ export function mergeTasks(existing: Task[], block: Block, turn: number): Task[]
     all.find(t => t.status === 'proposee' && t.kind === 'correction' && t.severity === 'haute') ??
     all.find(t => t.status === 'proposee' && t.kind === 'suggestion')
   return all.map(t => ({ ...t, isNext: target !== undefined && t.id === target.id }))
-}
-
-export type AdviceInput = {
-  percent: number
-  growth: number
-  reason: string
-  doneCount: number
-  isNewTopic: boolean
-  isBlocked: boolean
-  turn: number
-  sinceLast: number
-  dismissal: Dismissal
-}
-
-// La proposition n'apparaît qu'à des moments précis, et dit toujours pourquoi.
-export function advise(i: AdviceInput): Advice {
-  if (i.isBlocked || i.reason !== 'answer') return null
-  const snoozed =
-    i.dismissal !== null && i.turn - i.dismissal.turn < 3 && i.percent < i.dismissal.percent + 15
-  if (snoozed) return null
-  const pct = `${Math.round(i.percent)} % de contexte`
-  const make = (reason: string, isUrgent = false): Advice => ({ reason, isUrgent, percent: i.percent })
-  if (i.percent >= 80)
-    return make(`Contexte presque plein (${pct}) : au-delà, les réponses se dégradent et un compactage automatique risque de tomber au mauvais moment.`, true)
-  if (i.sinceLast < 6) return null
-  if (i.isNewTopic && i.percent >= 25)
-    return make(`Changement de sujet (${pct}) : l’historique précédent ne sert plus et alourdit les réponses.`)
-  if (i.growth >= 12 && i.percent >= 45)
-    return make(`Ce tour a ajouté ${Math.round(i.growth)} points de contexte (${pct}), surtout des sorties d’outils déjà exploitées et inutiles à garder.`)
-  if (i.doneCount >= 2 && i.percent >= 40)
-    return make(`Tâche majeure terminée : ${i.doneCount} actions réalisées (${pct}). Les décisions sont acquises, c’est un bon point de coupure.`)
-  if (i.percent >= 60)
-    return make(`Contexte chargé (${pct}) : compacter maintenant coûte moins que d’attendre la saturation.`)
-  return null
-}
-
-export function buildInstructions(tasks: Task[], done: Done[]): string {
-  const keep = tasks.filter(t => t.status === 'gardee' || t.status === 'en_cours')
-  const questions = tasks.filter(t => t.kind === 'question' && t.status === 'proposee')
-  return [
-    'Conserve : les tâches gardées et leur statut, les questions sans réponse, les décisions prises par l’utilisateur, et le résumé fonctionnel des tâches réalisées. Ignore les sorties brutes d’outils.',
-    keep.length ? `Tâches gardées : ${keep.map(t => `${t.title} [${t.status}]`).join(' ; ')}` : '',
-    questions.length ? `Questions ouvertes : ${questions.map(t => t.title).join(' ; ')}` : '',
-    done.length ? `Déjà réalisé : ${done.slice(-20).map(d => d.title).join(' ; ')}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n')
 }
 
 const LABELS: Record<string, string> = {

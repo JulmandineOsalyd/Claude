@@ -4,9 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Task } from '../types'
 import {
   INSTRUCTION,
-  advise,
   breathFrame,
-  buildInstructions,
   describeCall,
   mergeTasks,
   parseBlock,
@@ -15,14 +13,8 @@ import {
 } from './logic'
 
 const PANE = 'assistant-dev'
-const IMPROVE_SYSTEM =
-  'Tu réécris le brouillon de prompt de l’utilisateur pour un assistant de développement. ' +
-  'Garde son intention et sa langue, rends-le précis (objectif, contexte, contraintes, résultat attendu) sans rien inventer. ' +
-  'Réponds uniquement par le prompt réécrit, sans commentaire ni guillemets.'
 const tasks = atom({ plugin: 'assistant-dev', key: 'tasks' } as const, [])
 const done = atom({ plugin: 'assistant-dev', key: 'done' } as const, [])
-const advice = atom({ plugin: 'assistant-dev', key: 'advice' } as const, null)
-const dismissal = atom({ plugin: 'assistant-dev', key: 'dismissal' } as const, null)
 const showDetail = atom({ plugin: 'assistant-dev', key: 'showDetail' } as const, false)
 const beat = atom({ plugin: 'assistant-dev', key: 'beat' } as const, -1)
 const tab = atom({ plugin: 'assistant-dev', key: 'tab' } as const, 'courant')
@@ -49,8 +41,6 @@ async function change($: EngineInterface, fn: (list: Task[]) => Task[]) {
 
 export const register: Register = on => {
   let timer: { cancel: () => void } | null = null
-  let lastPercent: number | null = null
-  let lastAdviceTurn = -100
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -122,25 +112,6 @@ export const register: Register = on => {
       await save($)
     }
 
-    const usage = await $.session.usage()
-    const list = await read($, tasks)
-    const percent = usage.context.percent ?? 0
-    const growth = lastPercent === null ? 0 : percent - lastPercent
-    lastPercent = percent
-    const next$ = advise({
-      percent,
-      growth,
-      reason: e.reason,
-      doneCount: block?.realise.length ?? 0,
-      isNewTopic: block?.nouveauSujet === true,
-      isBlocked: block?.bloque === true,
-      turn,
-      sinceLast: turn - lastAdviceTurn,
-      dismissal: await read($, dismissal),
-    })
-    if (next$ !== null) lastAdviceTurn = turn
-    await update($, advice, () => next$)
-
     return next(e)
   })
 
@@ -184,86 +155,21 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const tip = await read($, advice)
     const pulse = await read($, beat)
-    if (e.props.hasSurvey) return next(e)
-    const { Box, Button, Text } = $.ui.resolve(e)
+    if (e.props.hasSurvey || pulse < 0) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const f = breathFrame(pulse)
 
-    const improve = async () => {
-      const { text: draft } = await $.prompt.read()
-      if (draft.trim() === '') {
-        $.ui.toast('Écris d’abord ton prompt, puis clique sur Améliorer.')
-
-        return
-      }
-      $.ui.toast('Amélioration du prompt…')
-      const r = await $.model.complete({ model: 'haiku', system: IMPROVE_SYSTEM, prompt: draft, maxTokens: 1500 })
-      if (!r.isAnswered) {
-        $.ui.toast('Amélioration impossible : réessaie dans un instant.')
-
-        return
-      }
-      await $.prompt.fill({ text: r.text.trim(), mode: 'replace' })
-      $.ui.toast('Prompt amélioré : relis puis envoie.')
-    }
-    const improveButton = <Button key="improve" label="✨ Améliorer le prompt" onPress={improve} />
-
-    // Pendant le travail : une ligne de respiration. Dès que le tour se termine, elle
-    // disparaît et la proposition de compactage reprend la bande.
-    if (pulse >= 0) {
-      const f = breathFrame(pulse)
-
-      return (
-        <Box gap={1} paddingX={1}>
-          <Text color="cyan">◯ {f.bar}</Text>
-          <Text bold color="cyan">
-            {f.label}
-          </Text>
-          <Text dimColor>
-            {f.cycles} cycle{f.cycles > 1 ? 's' : ''} · {f.elapsed}
-          </Text>
-          {improveButton}
-        </Box>
-      )
-    }
-    if (e.props.isWorking || tip === null) {
-      return (
-        <Box paddingX={1}>
-          {improveButton}
-        </Box>
-      )
-    }
-
-    const compact = async () => {
-      const [list, finished] = await Promise.all([read($, tasks), read($, done)])
-      await update($, advice, () => null)
-      // Ici la session est pilotée par l'application (mode SDK) : $.session.compact n'y existe
-      // pas encore, le compactage passe par une commande /compact envoyée comme un prompt.
-      const text = `/compact ${buildInstructions(list, finished).replace(/\s*\n\s*/g, ' | ')}`
-      try {
-        await $.prompt.submit({ text })
-      } catch {
-        await addToPrompt($, text)
-        $.ui.toast('Commande /compact insérée dans le prompt : appuie sur Entrée pour compacter.')
-      }
-    }
-    const later = async () => {
-      const turn = await $.session.turns()
-      await update($, dismissal, () => ({ turn, percent: tip.percent }))
-      await update($, advice, () => null)
-    }
-
-    const tone = tip.isUrgent ? 'red' : 'yellow'
-
+    // Une ligne de respiration pendant le travail ; elle disparaît dès que le tour se termine.
     return (
-      <Box gap={1} paddingX={1} borderStyle="round" borderColor={tone}>
-        <Text bold color={tone}>
-          {tip.isUrgent ? '⚠' : '◆'}
+      <Box gap={1} paddingX={1}>
+        <Text color="cyan">◯ {f.bar}</Text>
+        <Text bold color="cyan">
+          {f.label}
         </Text>
-        <Text>{tip.reason} Compacter ?</Text>
-        <Button key="compact" label="Compacter" variant="primary" onPress={compact} />
-        <Button key="later" label="Plus tard" onPress={later} />
-        {improveButton}
+        <Text dimColor>
+          {f.cycles} cycle{f.cycles > 1 ? 's' : ''} · {f.elapsed}
+        </Text>
       </Box>
     )
   })

@@ -17,17 +17,11 @@ export type Task = {
 
 export type Done = { title: string; detail?: string }
 
-export type Advice = { reason: string; isUrgent: boolean; percent: number } | null
-
-export type Dismissal = { turn: number; percent: number } | null
-
 declare module 'claude-code' {
   interface PluginState {
     'assistant-dev': {
       tasks: Task[]
       done: Done[]
-      advice: Advice
-      dismissal: Dismissal
       showDetail: boolean
       tab: 'courant' | 'gardees'
       beat: number
