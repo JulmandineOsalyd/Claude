@@ -16,6 +16,7 @@ const PANE = 'assistant-dev'
 const tasks = atom({ plugin: 'assistant-dev', key: 'tasks' } as const, [])
 const done = atom({ plugin: 'assistant-dev', key: 'done' } as const, [])
 const showDetail = atom({ plugin: 'assistant-dev', key: 'showDetail' } as const, false)
+const expanded = atom({ plugin: 'assistant-dev', key: 'expanded' } as const, [])
 const beat = atom({ plugin: 'assistant-dev', key: 'beat' } as const, -1)
 const tab = atom({ plugin: 'assistant-dev', key: 'tab' } as const, 'courant')
 
@@ -183,6 +184,7 @@ export const register: Register = on => {
     const { Box, Button, Input, Text } = $.ui.resolve(e)
     const list = await read($, tasks)
     const current = await read($, tab)
+    const opened = await read($, expanded)
 
     const launch = async (t: Task, text: string) => {
       await addToPrompt($, text)
@@ -194,6 +196,19 @@ export const register: Register = on => {
     const setStatus = (t: Task, status: Task['status']) =>
       change($, l => l.map(x => (x.id === t.id ? { ...x, status, isNext: false } : x)))
 
+    const toggle = (id: string) =>
+      update($, expanded, l => (l.includes(id) ? l.filter(x => x !== id) : [...l, id]))
+    // Une tâche ajoutée à la main est gardée d'office : sinon la prochaine réponse la remplacerait.
+    const addManual = async (title: string) => {
+      const turn = await $.session.turns()
+      await change($, l => [
+        ...l,
+        { id: `manual-${Date.now()}`, kind: 'suggestion' as const, title, status: 'gardee' as const, turn },
+      ])
+      await update($, tab, () => 'gardees')
+      $.ui.toast('Tâche ajoutée dans « Gardées ».')
+    }
+
     const KIND = {
       question: { icon: '?', color: 'yellow', label: 'Question' },
       correction: { icon: '!', color: 'red', label: 'Correction' },
@@ -203,30 +218,22 @@ export const register: Register = on => {
     const card = (t: Task, isGardee: boolean, isNext = false) => {
       const k = KIND[t.kind]
       const accent = isNext ? 'green' : k.color
+      const isOpen = opened.includes(t.id)
 
       return (
-        <Box
-          key={`card-${t.id}`}
-          flexDirection="column"
-          gap={1}
-          paddingX={1}
-          borderStyle="round"
-          borderColor={accent}
-        >
-          <Box gap={1}>
+        <Box key={`card-${t.id}`} flexDirection="column" paddingX={1} borderStyle="round" borderColor={accent}>
+          <Box gap={1} flexWrap="wrap">
             <Text bold color={accent}>
               {k.icon}
             </Text>
             <Text bold>{t.title}</Text>
-          </Box>
-          <Box gap={1}>
-            <Text color={k.color} dimColor>
-              {k.label}
-            </Text>
             {t.severity === 'haute' ? <Text color="red">● haute</Text> : null}
             {t.status === 'en_cours' ? <Text color="green">▶ en cours</Text> : null}
+            {t.detail ? (
+              <Button key={`more-${t.id}`} label={isOpen ? '▾ détail' : '▸ détail'} onPress={() => toggle(t.id)} />
+            ) : null}
           </Box>
-          {t.detail ? <Text dimColor>{t.detail}</Text> : null}
+          {t.detail && isOpen ? <Text dimColor>{t.detail}</Text> : null}
           {t.kind === 'question' && t.options ? (
             <Box flexWrap="wrap" gap={1}>
               {t.options.map((o, i) => (
@@ -274,13 +281,16 @@ export const register: Register = on => {
       )
     }
 
+    const RANK = { haute: 0, moyenne: 1, basse: 2 } as const
+    const bySeverity = (a: Task, b: Task) => (RANK[a.severity ?? 'basse'] ?? 2) - (RANK[b.severity ?? 'basse'] ?? 2)
+
     const section = (title: string, color: string, items: Task[], isGardee = false, isNext = false) =>
       items.length === 0 ? null : (
         <Box key={`sec-${title}`} flexDirection="column" gap={1}>
           <Text bold color={color}>
             {title.toUpperCase()} · {items.length}
           </Text>
-          {items.map(t => card(t, isGardee, isNext))}
+          {[...items].sort(bySeverity).map(t => card(t, isGardee, isNext))}
         </Box>
       )
 
@@ -306,6 +316,14 @@ export const register: Register = on => {
             onPress={() => update($, tab, () => 'gardees')}
           />
         </Box>
+        <Input
+          key="add-task"
+          placeholder="Ajouter une tâche…"
+          submitLabel="ajouter"
+          onSubmit={async v => {
+            if (v.trim()) await addManual(v.trim())
+          }}
+        />
         {current === 'courant' ? (
           <Box flexDirection="column" gap={1}>
             {isEmpty ? <Text dimColor>✓ Rien en attente. Les prochaines propositions arriveront ici.</Text> : null}

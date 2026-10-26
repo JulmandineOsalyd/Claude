@@ -23,6 +23,7 @@ declare module 'claude-code' {
       tasks: Task[]
       done: Done[]
       showDetail: boolean
+      expanded: string[]
       tab: 'courant' | 'gardees'
       beat: number
     }
