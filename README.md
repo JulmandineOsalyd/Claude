@@ -5,9 +5,9 @@ Marketplace de mods Claude Code (`julie-mods`), en français. Chaque mod a son d
 | Mod | Dossier | Rôle |
 | --- | --- | --- |
 | [prompt-enhancer](#prompt-enhancer) | `prompt-enhancer/` | Améliore ton prompt avec Haiku 5.5, en s'appuyant sur l'historique de la conversation. |
-| [assistant-dev](#assistant-dev) | `assistant-dev/` | Garde le fil d'une session : résumé des tâches, panneau Tâches, respiration, compactage au bon moment, amélioration du prompt. |
+| [assistant-dev](#assistant-dev) | `assistant-dev/` | Garde le fil d'une session : résumé des tâches, panneau Tâches, respiration. |
 
-Les deux mods s'installent depuis le même marketplace, `JulmandineOsalyd/Claude`, et peuvent être utilisés ensemble : chacun affiche alors un bouton **✨ Améliorer le prompt**.
+Les deux mods s'installent depuis le même marketplace, `JulmandineOsalyd/Claude`, et peuvent être utilisés ensemble.
 
 ## Installation
 
@@ -56,9 +56,7 @@ Mod Claude Code qui garde le fil d'une session. Il fait :
 
 - un résumé des tâches réalisées à la fin de chaque réponse ;
 - un panneau Tâches (**Lancer** / **Garder** / **Écarter**), où Lancer ajoute la tâche au prompt sans rien écraser ;
-- une respiration 4-4-4-4 dans la bande au-dessus du prompt, affichée seulement pendant que Claude travaille ;
-- des propositions de compactage aux bons moments (fin de tâche majeure, changement de sujet, contexte chargé), avec la raison ;
-- un bouton **✨ Améliorer le prompt**.
+- une respiration 4-4-4-4 dans la bande au-dessus du prompt, affichée seulement pendant que Claude travaille.
 
 ### Installation
 
